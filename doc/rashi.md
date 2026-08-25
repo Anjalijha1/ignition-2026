@@ -1,0 +1,4 @@
+- **GitHub:** [rashiii-18](https://github.com/rashiii-18)
+- **About:** My name is Rashi Chaurasia and I'm from Varanasi. Currently, I'm in Second year pursuing a B.TECH in CSE(AIML) at AKGEC, Ghaziabad. My domain is Fronntend. I enjoy coding and learning new technology-related skills, and I am currently working on improving my skills as a beginner.
+- **Skills:** Basics of HTML, CSS, Java & C
+- **Fun Fact:** I tend to explain things with so much detail that a simple story can become a whole experience.

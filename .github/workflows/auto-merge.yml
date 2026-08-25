@@ -1,0 +1,179 @@
+name: Auto Merge PR
+
+# Triggers on PRs targeting main
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  validate-and-merge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout base repo
+        uses: actions/checkout@v4
+
+      - name: Get changed files
+        id: changed-files
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+            });
+
+            const changedFiles = files.map(f => ({
+              filename: f.filename,
+              status: f.status,
+            }));
+
+            console.log('Changed files:', JSON.stringify(changedFiles, null, 2));
+            core.setOutput('files', JSON.stringify(changedFiles));
+            core.setOutput('count', files.length);
+
+      - name: Validate PR changes
+        id: validate
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const files = JSON.parse('${{ steps.changed-files.outputs.files }}');
+            const prNumber = context.payload.pull_request.number;
+            const prAuthor = context.payload.pull_request.user.login;
+
+            let isValid = true;
+            let reasons = [];
+
+            // Check if there are any files changed
+            if (files.length === 0) {
+              isValid = false;
+              reasons.push('❌ No files were changed in this PR.');
+            }
+
+            // Validate each file
+            for (const file of files) {
+              // Check if file is inside doc/ folder
+              if (!file.filename.startsWith('doc/')) {
+                isValid = false;
+                reasons.push(`❌ File \`${file.filename}\` is outside the \`doc/\` folder. Only files in \`doc/\` are allowed.`);
+              }
+
+              // Check if file is a .md file
+              if (!file.filename.endsWith('.md')) {
+                isValid = false;
+                reasons.push(`❌ File \`${file.filename}\` is not a Markdown file. Only \`.md\` files are allowed.`);
+              }
+
+              // Check if file is being added (not modified/deleted)
+              if (file.status === 'removed') {
+                isValid = false;
+                reasons.push(`❌ File \`${file.filename}\` was deleted. You should only add new files.`);
+              }
+
+              // Check it's not modifying the example file
+              if (file.filename === 'doc/example.md') {
+                isValid = false;
+                reasons.push(`❌ Please don't modify \`doc/example.md\`. Create your own file instead.`);
+              }
+            }
+
+            // Check that only 1 file is added (one file per person)
+            if (files.length > 1) {
+              isValid = false;
+              reasons.push(`❌ Please add only **one** file. You changed ${files.length} files.`);
+            }
+
+            core.setOutput('is_valid', isValid);
+            core.setOutput('reasons', JSON.stringify(reasons));
+
+            if (!isValid) {
+              console.log('Validation failed:', reasons.join('\n'));
+            } else {
+              console.log('✅ Validation passed!');
+            }
+
+      - name: Comment on invalid PR
+        if: steps.validate.outputs.is_valid == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const reasons = JSON.parse('${{ steps.validate.outputs.reasons }}');
+            const body = `## 🚫 Auto-Merge Blocked
+
+            Hey @${context.payload.pull_request.user.login}! Your PR couldn't be auto-merged because:
+
+            ${reasons.join('\n')}
+
+            ### 📋 Rules for auto-merge:
+            - Add **only one** \`.md\` file inside the \`doc/\` folder
+            - Don't modify or delete existing files
+            - Don't touch files outside \`doc/\`
+
+            Please fix these issues and push again. The CI will re-run automatically! 🔄`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: body,
+            });
+
+      - name: Approve PR
+        if: steps.validate.outputs.is_valid == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.pulls.createReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              event: 'APPROVE',
+              body: '✅ Auto-approved! Your file looks great. Merging now... 🚀',
+            });
+
+      - name: Merge PR
+        if: steps.validate.outputs.is_valid == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const prAuthor = context.payload.pull_request.user.login;
+
+            try {
+              await github.rest.pulls.merge({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                merge_method: 'squash',
+                commit_title: `docs: add ${prAuthor}'s contribution`,
+                commit_message: `Auto-merged contribution from @${prAuthor} 🎉`,
+              });
+
+              // Add a welcome comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: `## 🎉 Welcome aboard, @${prAuthor}!\n\nYour PR has been **automatically merged**. You're now an Ignition contributor! 🔥\n\nThanks for contributing to **Ignition 2026**! ⭐`,
+              });
+
+            } catch (error) {
+              console.log('Merge failed:', error.message);
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: `## ⚠️ Auto-merge failed\n\nThe PR passed validation but couldn't be merged automatically. A maintainer will review it manually.\n\nError: ${error.message}`,
+              });
+            }
+
+      - name: Fail if invalid
+        if: steps.validate.outputs.is_valid == 'false'
+        run: exit 1
